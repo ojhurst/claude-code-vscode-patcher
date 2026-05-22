@@ -135,6 +135,21 @@ It prints what it patched, what was already patched, and what it skipped.
 
 ---
 
+## Updating
+
+When you pull a new version of this repo, re-run the watcher installer:
+
+```sh
+bash install-watcher.sh
+```
+
+The launchd agent stores an absolute path to the watcher script. If that
+script is renamed or moved between versions, the installed agent points at the
+old location until you re-register it. Re-running `install-watcher.sh` unloads
+the stale agent and writes a fresh one. It is safe to run any time.
+
+---
+
 ## How it survives extension updates
 
 Every Claude Code release ships a freshly built bundle, which wipes the

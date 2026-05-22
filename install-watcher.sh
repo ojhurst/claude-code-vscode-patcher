@@ -13,7 +13,7 @@ set -euo pipefail
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LABEL="com.claude-code-vscode-patcher.watcher"
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
-WATCHER="$REPO_DIR/watch-and-patch.sh"
+WATCHER="$REPO_DIR/claude-code-vscode-repatcher.sh"
 
 if [ "${1:-}" = "--uninstall" ]; then
     launchctl unload "$PLIST" 2>/dev/null || true
@@ -41,7 +41,6 @@ cat > "$PLIST" <<PLIST
     <string>$LABEL</string>
     <key>ProgramArguments</key>
     <array>
-        <string>/bin/bash</string>
         <string>$WATCHER</string>
     </array>
     <key>WatchPaths</key>
