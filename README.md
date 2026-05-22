@@ -9,6 +9,14 @@ updates.
 
 ---
 
+## Watch it — the 35-second tour
+
+<video src="https://github.com/ojhurst/claude-code-vscode-patcher/releases/download/v1/claude-code-vscode-patcher-v2.mp4" controls></video>
+
+If the player does not load, [download the demo](https://github.com/ojhurst/claude-code-vscode-patcher/releases/download/v1/claude-code-vscode-patcher-v2.mp4).
+
+---
+
 ## What it is
 
 The official Claude Code VS Code extension is good, but it ships with a handful
