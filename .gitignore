@@ -1,0 +1,13 @@
+# Timestamped backups the patcher writes beside every file it touches
+*.bak.*
+
+# Python
+__pycache__/
+*.pyc
+
+# Logs
+*.log
+logs/
+
+# macOS
+.DS_Store
