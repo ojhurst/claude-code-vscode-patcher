@@ -11,9 +11,9 @@ updates.
 
 ## Watch it — the 35-second tour
 
-<video src="https://github.com/ojhurst/claude-code-vscode-patcher/releases/download/v1/claude-code-vscode-patcher-v2.mp4" controls></video>
+[![Watch the claude-code-vscode-patcher demo — a 35-second tour](demo-poster.png)](https://github.com/ojhurst/claude-code-vscode-patcher/releases/download/v1/claude-code-vscode-patcher-v2.mp4)
 
-If the player does not load, [download the demo](https://github.com/ojhurst/claude-code-vscode-patcher/releases/download/v1/claude-code-vscode-patcher-v2.mp4).
+*Click the image to play the 35-second tour.*
 
 ---
 
