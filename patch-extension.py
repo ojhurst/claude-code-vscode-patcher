@@ -259,6 +259,13 @@ ORIGINAL_ENTER_GATE = (
 PATCHED_ENTER_GATE = (
     'if(U6(),1)q1()'
 )
+# Regex forms — capture the two rotating function names so the patch survives
+# minifier renames between Anthropic releases.
+# Examples: z8/k1 in 2.1.152, U6/q1 in 2.1.158.
+ENTER_GATE_RE = re.compile(
+    r'if\((\w+)\(\),t\.current\?\.textContent\?\.trim\(\)\|\|""\)(\w+)\(\)'
+)
+ENTER_GATE_PATCHED_RE = re.compile(r'if\(\w+\(\),1\)\w+\(\)')
 ORIGINAL_K1_GATE = (
     'let L1=t.current?.textContent?.trim()||"";if(!L1)return;'
 )
@@ -1133,21 +1140,27 @@ def patch_image_only_submit(text: str) -> tuple[str, list[str], list[str]]:
         new_text = new_text.replace(OLD_PATCHED_K1_GATE, ORIGINAL_K1_GATE, 1)
         applied.append("image-only-submit (reverted Build 4-13 empty form)")
 
-    enter_ok = ORIGINAL_ENTER_GATE in new_text or PATCHED_ENTER_GATE in new_text
+    m_gate = ENTER_GATE_RE.search(new_text)
+    gate_already_patched = m_gate is None and bool(ENTER_GATE_PATCHED_RE.search(new_text))
     k1_ok = ORIGINAL_K1_GATE in new_text
-    if not (enter_ok and k1_ok):
-        bits = []
-        if not enter_ok:
-            bits.append("enter-gate not found")
-        if not k1_ok:
-            bits.append("k1-gate not found")
-        skipped.append(f"image-only-submit ({'; '.join(bits)})")
+
+    if not m_gate and not gate_already_patched:
+        skipped.append("image-only-submit (enter-gate not found)")
         return new_text, applied, skipped
 
-    if ORIGINAL_ENTER_GATE in new_text:
-        new_text = new_text.replace(ORIGINAL_ENTER_GATE, PATCHED_ENTER_GATE, 1)
+    if not k1_ok:
+        skipped.append("image-only-submit (k1-gate not found)")
+        return new_text, applied, skipped
+
+    if m_gate:
+        fn1, fn2 = m_gate.group(1), m_gate.group(2)
+        new_text = new_text.replace(m_gate.group(0), f'if({fn1}(),1){fn2}()', 1)
+        gate_note = f"Enter gate [{fn1}/{fn2}] + "
+    else:
+        gate_note = "enter gate already patched + "
+
     new_text = new_text.replace(ORIGINAL_K1_GATE, PATCHED_K1_GATE, 1)
-    applied.append("image-only-submit (Enter gate + k1 gate + ZWS placeholder)")
+    applied.append(f"image-only-submit ({gate_note}k1 gate + ZWS placeholder)")
     return new_text, applied, skipped
 
 
