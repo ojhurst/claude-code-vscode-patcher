@@ -254,32 +254,33 @@ TITLE_UNLOCK_PATCHED_MARKER = (
 # component's internal React state names, which change on every minified
 # rebuild.
 ORIGINAL_ENTER_GATE = (
-    'if(z8(),t.current?.textContent?.trim()||"")k1()'
+    'if(U6(),t.current?.textContent?.trim()||"")q1()'
 )
 PATCHED_ENTER_GATE = (
-    'if(z8(),1)k1()'
+    'if(U6(),1)q1()'
 )
 ORIGINAL_K1_GATE = (
-    'let I1=t.current?.textContent?.trim()||"";if(!I1)return;'
+    'let L1=t.current?.textContent?.trim()||"";if(!L1)return;'
 )
 # Old broken form (Build 4-13) — image-only worked but sent "" downstream → API 400.
+# Uses old var name I1 (pre-2.1.158); kept for revert detection on old bundles.
 OLD_PATCHED_K1_GATE = (
     'let I1=t.current?.textContent?.trim()||"";'
     'if(!I1&&!document.querySelector(".thumbIcon_lcdCYQ"))return;'
 )
-# Build 14-16 form — visible "." placeholder. Worked but ugly.
+# Build 14-16 form — visible "." placeholder. Worked but ugly. Old I1 var.
 BUILD14_PATCHED_K1_GATE = (
     'let I1=t.current?.textContent?.trim()||"";'
     'if(!I1&&!document.querySelector(".thumbIcon_lcdCYQ"))return;'
     'if(!I1)I1=".";'
 )
-# New form — invisible ZWS (U+200B) placeholder.
+# Current form — invisible ZWS (U+200B) placeholder.
 PATCHED_K1_GATE = (
-    'let I1=t.current?.textContent?.trim()||"";'
-    'if(!I1&&!document.querySelector(".thumbIcon_lcdCYQ"))return;'
-    'if(!I1)I1="​";'
+    'let L1=t.current?.textContent?.trim()||"";'
+    'if(!L1&&!document.querySelector(".thumbIcon_lcdCYQ"))return;'
+    'if(!L1)L1="​";'
 )
-IMAGE_ONLY_PATCHED_MARKER = 'if(!I1)I1="​";'
+IMAGE_ONLY_PATCHED_MARKER = 'if(!L1)L1="​";'
 
 # --- Live override-aware title in the in-session title bar ------------------
 # Stock: the title-bar JSX renders `$.activeSession.value?.summary.value`
@@ -506,12 +507,12 @@ TITLE_GUARD_PATCHED_MARKER = PATCHED_TITLE_GUARD
 # bundles, `Qq1` as of 2.1.136) so a single-character rename does not break
 # the anchor. The rest of the literal string is stable across recent builds.
 DIR_MENTION_RE = re.compile(
-    r'let m1=!\(I1&&d\.type==="directory"\),_0=m1\?d\.path\+" ":d\.path,'
-    r'k0=(?P<helper>[A-Za-z_$][\w$]*)\(D,L2,_0,!0\);'
+    r'let m1=!\((?P<tvar>[A-Za-z_$][\w$]*)&&d\.type==="directory"\),_0=m1\?d\.path\+" ":d\.path,'
+    r'k0=(?P<helper>[A-Za-z_$][\w$]*)\(D,(?P<l2var>[A-Za-z_$][\w$]*),_0,!0\);'
     r'if\(t\.current\.textContent=k0,A\(k0\),m1\)'
-    r'o1\(\(O5\)=>new Set\(O5\)\.add\(`@\$\{d\.path\}`\)\);'
+    r'(?P<setfn>[A-Za-z_$][\w$]*)\(\(O5\)=>new Set\(O5\)\.add\(`@\$\{d\.path\}`\)\);'
     r'let l0=t\.current\.firstChild\|\|t\.current;if\(l0\)\{'
-    r'let O5=document\.createRange\(\),S2=m1\?1:0,'
+    r'let O5=document\.createRange\(\),(?P<s2var>[A-Za-z_$][\w$]*)=m1\?1:0,'
 )
 DIR_MENTION_PATCHED_MARKER = 'let m1=!0,_0=d.path+" "'
 
@@ -1321,15 +1322,18 @@ def patch_folder_mention(text: str) -> tuple[str, list[str], list[str]]:
         return new_text, applied, skipped
 
     helper = m.group("helper")
+    l2var = m.group("l2var")
+    setfn = m.group("setfn")
+    s2var = m.group("s2var")
     replacement = (
         'let m1=!0,_0=d.path+" ",'
-        f'k0={helper}(D,L2,_0,!0);if(t.current.textContent=k0,A(k0),m1)'
-        'o1((O5)=>new Set(O5).add(`@${d.path}`));'
-        'let l0=t.current.firstChild||t.current;if(l0){'
-        'let O5=document.createRange(),S2=1,'
+        + f'k0={helper}(D,{l2var},_0,!0);if(t.current.textContent=k0,A(k0),m1)'
+        + setfn + '((O5)=>new Set(O5).add(`@${d.path}`));'
+        + 'let l0=t.current.firstChild||t.current;if(l0){'
+        + f'let O5=document.createRange(),{s2var}=1,'
     )
     new_text = new_text[:m.start()] + replacement + new_text[m.end():]
-    applied.append(f"folder-mention (directories now add context chip; helper={helper})")
+    applied.append(f"folder-mention (directories now add context chip; helper={helper} l2={l2var} setfn={setfn} s2={s2var})")
     return new_text, applied, skipped
 
 
