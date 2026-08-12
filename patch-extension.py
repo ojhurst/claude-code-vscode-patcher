@@ -609,6 +609,57 @@ USER_MSG_TIME_JS_MARKERS_OLD = (
     "__cceUserMsgStampInstalledV4=true",
 )
 
+# --- Auto-scroll the chat panel to the bottom on new content ----------------
+# James wants the chat panel to ALWAYS snap to the bottom the moment new
+# content arrives: a streamed token, a tool-output row, or — the case that
+# actually stranded him — a screenshot <img> whose height only settles AFTER
+# it decodes. Stock behavior leaves the scroll position wherever it was, so a
+# late-growing image (or a burst of streamed output) pushes the newest content
+# below the fold and he has to hand-scroll down every time.
+#
+# Approach: a self-contained IIFE appended to the bundle (never touch the
+# minified code). It:
+#   1. Pins the messages scroll container to the bottom on every DOM change
+#      (childList + characterData, subtree) — new messages, streaming text,
+#      tool output. Coalesced to one scroll per animation frame.
+#   2. Re-pins on capture-phase image `load` events, plus a rAF and a short
+#      timeout after, to catch screenshots whose height grows post-decode.
+#   3. Re-pins on window resize (panel width change reflows height).
+#
+# The scroll container is `[class*="messagesContainer_"]` — the only
+# overflow-y:auto flex column that holds the conversation (stock class
+# messagesContainer_07S1Yg, one occurrence in the bundle). The class-prefix
+# match survives the per-release hash bump, same convention as the other
+# webview patches here.
+#
+# Always-snap by design: James explicitly wants constant auto-scroll, so there
+# is no "only if near bottom" gate. Because the observer reacts only to DOM
+# mutations, he can still freely scroll up to read while nothing is changing;
+# the panel re-pins the instant new content lands or an image finishes loading.
+# Setting scrollTop does not mutate the DOM, so the observer never re-triggers
+# itself, and the rAF coalescing prevents scroll storms during streaming.
+AUTO_SCROLL_JS_IIFE = (
+    "\n;(function(){"
+    "if(globalThis.__cceAutoScrollBottomV1)return;"
+    "globalThis.__cceAutoScrollBottomV1=true;"
+    "/*__cce_autoscroll_bottom_v1__*/"
+    "var SEL='[class*=\"messagesContainer_\"]';"
+    "var pending=false;"
+    "function pin(){var c=document.querySelector(SEL);if(c){c.scrollTop=c.scrollHeight}}"
+    "function schedule(){if(pending)return;pending=true;"
+    "requestAnimationFrame(function(){pending=false;pin()})}"
+    "try{new MutationObserver(schedule).observe(document.body,"
+    "{childList:true,subtree:true,characterData:true})}catch(e){}"
+    "document.addEventListener('load',function(e){"
+    "var t=e.target;"
+    "if(t&&t.tagName==='IMG'){schedule();requestAnimationFrame(schedule);setTimeout(schedule,60)}"
+    "},true);"
+    "window.addEventListener('resize',schedule);"
+    "schedule();setTimeout(schedule,500)"
+    "})();\n"
+)
+AUTO_SCROLL_JS_MARKER = "__cceAutoScrollBottomV1"
+
 # --- Gold star on the active Local/Web tab ----------------------------------
 # Build 28 originally placed this star on `.sessionItem_OOQiHg.active_OOQiHg`
 # (the selected session row). Build 31 moved it to the active tab in the
@@ -1274,6 +1325,28 @@ def patch_user_msg_time_js(text: str) -> tuple[str, list[str], list[str]]:
     return new_text, applied, skipped
 
 
+def patch_auto_scroll_bottom_js(text: str) -> tuple[str, list[str], list[str]]:
+    """Append the IIFE that keeps the chat pinned to the bottom on new content.
+
+    Installs a MutationObserver on the messages scroll container
+    (`[class*="messagesContainer_"]`) that snaps scrollTop to scrollHeight
+    whenever the DOM changes, plus a capture-phase image-load handler so
+    screenshots that grow after decoding still land at the bottom. Idempotent
+    — bails if the guard marker is already present.
+    """
+    applied: list[str] = []
+    skipped: list[str] = []
+    if AUTO_SCROLL_JS_MARKER in text:
+        skipped.append("auto-scroll-bottom (already)")
+        return text, applied, skipped
+    new_text = text + AUTO_SCROLL_JS_IIFE
+    applied.append(
+        "auto-scroll-bottom V1 (pin messagesContainer to bottom on new "
+        "content + image load)"
+    )
+    return new_text, applied, skipped
+
+
 def patch_full_path_tool_headers(text: str) -> tuple[str, list[str], list[str]]:
     """Show parent folders in tool-call rows instead of just the basename.
 
@@ -1645,6 +1718,11 @@ def patch_js(ext_dir: Path) -> str:
     text, umt_applied, umt_skipped = patch_user_msg_time_js(text)
     applied.extend(umt_applied)
     skipped.extend(umt_skipped)
+
+    # --- Patch: always keep the chat pinned to the bottom on new content ---
+    text, asb_applied, asb_skipped = patch_auto_scroll_bottom_js(text)
+    applied.extend(asb_applied)
+    skipped.extend(asb_skipped)
 
     # --- Patch: tab-complete slash command into input (no bare-send) ---
     text, stc_applied, stc_skipped = patch_slash_tab_complete(text)
