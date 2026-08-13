@@ -632,22 +632,50 @@ USER_MSG_TIME_JS_MARKERS_OLD = (
 # match survives the per-release hash bump, same convention as the other
 # webview patches here.
 #
-# Always-snap by design: James explicitly wants constant auto-scroll, so there
-# is no "only if near bottom" gate. Because the observer reacts only to DOM
-# mutations, he can still freely scroll up to read while nothing is changing;
-# the panel re-pins the instant new content lands or an image finishes loading.
-# Setting scrollTop does not mutate the DOM, so the observer never re-triggers
-# itself, and the rAF coalescing prevents scroll storms during streaming.
+# Gated on "user is pinned to the bottom" (2026-08-13 fix). Build 8 shipped an
+# always-snap version with no gate, on the theory that "the observer reacts only
+# to DOM mutations, so he can still scroll up while nothing is changing." That
+# theory was wrong in practice: with characterData+subtree on document.body,
+# every streamed token is a mutation, and React re-renders the message list
+# while you scroll. So scrolling up during (or shortly after) a response got
+# yanked straight back to the bottom on the next animation frame — unusable.
+#
+# The gate is the standard stick-to-bottom pattern. A passive capture-phase
+# scroll listener records whether the user is within NEAR px of the bottom; it
+# never calls scrollTop, so it cannot fight the user. pin() then no-ops unless
+# that flag is set. Because the flag is captured from real scroll events (not
+# measured inside the observer, which fires *after* content already landed), it
+# still reads "was he at the bottom before this content arrived."
+#
+# Unpinning requires scrollTop to actually decrease (t.scrollTop<lastTop-1), so
+# content growing below the viewport during streaming does not falsely unpin.
+# Re-pinning is automatic the moment he scrolls back to the bottom, and Enter in
+# the composer re-pins too, so sending a message always jumps to the newest
+# content. lastEl resets the baseline when React swaps the container (session
+# switch), and rAF coalescing still prevents scroll storms during streaming.
 AUTO_SCROLL_JS_IIFE = (
     "\n;(function(){"
     "if(globalThis.__cceAutoScrollBottomV1)return;"
     "globalThis.__cceAutoScrollBottomV1=true;"
     "/*__cce_autoscroll_bottom_v1__*/"
     "var SEL='[class*=\"messagesContainer_\"]';"
-    "var pending=false;"
-    "function pin(){var c=document.querySelector(SEL);if(c){c.scrollTop=c.scrollHeight}}"
+    "var NEAR=64;"
+    "var pending=false;var pinned=true;var lastEl=null;var lastTop=0;"
+    "function box(){return document.querySelector(SEL)}"
+    "function nearBottom(c){return (c.scrollHeight-c.scrollTop-c.clientHeight)<NEAR}"
+    "function pin(){var c=box();if(c&&pinned){c.scrollTop=c.scrollHeight;lastEl=c;lastTop=c.scrollTop}}"
     "function schedule(){if(pending)return;pending=true;"
     "requestAnimationFrame(function(){pending=false;pin()})}"
+    "document.addEventListener('scroll',function(e){"
+    "var t=e.target;"
+    "if(!t||t.nodeType!==1||!t.matches||!t.matches(SEL))return;"
+    "if(t!==lastEl){lastEl=t;lastTop=t.scrollTop;pinned=nearBottom(t);return}"
+    "if(nearBottom(t)){pinned=true}else if(t.scrollTop<lastTop-1){pinned=false}"
+    "lastTop=t.scrollTop"
+    "},true);"
+    "document.addEventListener('keydown',function(e){"
+    "if(e.key==='Enter'&&!e.shiftKey&&e.target&&e.target.tagName==='TEXTAREA'){pinned=true}"
+    "},true);"
     "try{new MutationObserver(schedule).observe(document.body,"
     "{childList:true,subtree:true,characterData:true})}catch(e){}"
     "document.addEventListener('load',function(e){"
@@ -1333,6 +1361,11 @@ def patch_auto_scroll_bottom_js(text: str) -> tuple[str, list[str], list[str]]:
     whenever the DOM changes, plus a capture-phase image-load handler so
     screenshots that grow after decoding still land at the bottom. Idempotent
     — bails if the guard marker is already present.
+
+    Snapping is gated on the user being within 64px of the bottom. If he has
+    scrolled up to read, his position is left completely alone until he scrolls
+    back down (or hits Enter in the composer). Without that gate the panel
+    fights the user on every streamed token — see the 2026-08-13 note above.
     """
     applied: list[str] = []
     skipped: list[str] = []
@@ -1342,7 +1375,7 @@ def patch_auto_scroll_bottom_js(text: str) -> tuple[str, list[str], list[str]]:
     new_text = text + AUTO_SCROLL_JS_IIFE
     applied.append(
         "auto-scroll-bottom V1 (pin messagesContainer to bottom on new "
-        "content + image load)"
+        "content + image load, only when already at the bottom)"
     )
     return new_text, applied, skipped
 
