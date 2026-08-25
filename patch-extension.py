@@ -263,31 +263,45 @@ PATCHED_ENTER_GATE = (
 # minifier renames between Anthropic releases.
 # Examples: z8/k1 in 2.1.152, U6/q1 in 2.1.158.
 ENTER_GATE_RE = re.compile(
-    r'if\((\w+)\(\),t\.current\?\.textContent\?\.trim\(\)\|\|""\)(\w+)\(\)'
+    r'if\((\w+)\(\),\w+\.current\?\.textContent\?\.trim\(\)\|\|""\)(\w+)\(\)'
 )
 ENTER_GATE_PATCHED_RE = re.compile(r'if\(\w+\(\),1\)\w+\(\)')
-ORIGINAL_K1_GATE = (
-    'let L1=t.current?.textContent?.trim()||"";if(!L1)return;'
+# --- image-only submit: rename-proof gate detection -------------------------
+# Anthropic rotates minified locals every release (L1 -> je in 2.1.219, I1
+# before that). Build 10 hardcoded them, so on a fresh bundle the patch silently
+# no-ops and reports "k1-gate not found" — indistinguishable from real breakage.
+# Build 11 captures the names instead, and detects the patched form structurally
+# plus a stable comment marker, so neither check depends on the mangler.
+K1_GATE_RE = re.compile(
+    r'let (\w+)=(\w+)\.current\?\.textContent\?\.trim\(\)\|\|"";if\(!\1\)return;'
 )
-# Old broken form (Build 4-13) — image-only worked but sent "" downstream → API 400.
-# Uses old var name I1 (pre-2.1.158); kept for revert detection on old bundles.
-OLD_PATCHED_K1_GATE = (
-    'let I1=t.current?.textContent?.trim()||"";'
-    'if(!I1&&!document.querySelector(".thumbIcon_lcdCYQ"))return;'
+# Any patched variant, Build 4 through today, regardless of local names.
+K1_GATE_PATCHED_RE = re.compile(
+    r'let (\w+)=\w+\.current\?\.textContent\?\.trim\(\)\|\|"";'
+    r'if\(!\1&&!document\.querySelector\('
 )
-# Build 14-16 form — visible "." placeholder. Worked but ugly. Old I1 var.
-BUILD14_PATCHED_K1_GATE = (
-    'let I1=t.current?.textContent?.trim()||"";'
-    'if(!I1&&!document.querySelector(".thumbIcon_lcdCYQ"))return;'
-    'if(!I1)I1=".";'
+# Stable marker — a comment the mangler cannot rename.
+IMAGE_ONLY_PATCHED_MARKER = "/*__cce_ios*/"
+# Full patched statement, including whatever placeholder an older build wrote
+# ("" in Build 4-13, "." in Build 14-16, ZWS today). Used to normalize an old
+# patched bundle up to the current form instead of skipping it.
+K1_GATE_PATCHED_FULL_RE = re.compile(
+    r'let (\w+)=(\w+)\.current\?\.textContent\?\.trim\(\)\|\|"";'
+    r'if\(!\1&&!document\.querySelector\([^)]*\)\)return;'
+    r'(?:if\(!\1\)\1="[^"]*";)?'
+    r'(?:/\*__cce_ios\*/)?'
 )
-# Current form — invisible ZWS (U+200B) placeholder.
-PATCHED_K1_GATE = (
-    'let L1=t.current?.textContent?.trim()||"";'
-    'if(!L1&&!document.querySelector(".thumbIcon_lcdCYQ"))return;'
-    'if(!L1)L1="​";'
-)
-IMAGE_ONLY_PATCHED_MARKER = 'if(!L1)L1="​";'
+# Class-prefix match so the per-release hash bump on thumbIcon_ cannot break it.
+THUMB_SELECTOR = '[class*="thumbIcon_"]'
+
+
+def build_patched_k1_gate(var: str, ref: str) -> str:
+    """Render the image-only gate using the bundle's own local names."""
+    return (
+        f'let {var}={ref}.current?.textContent?.trim()||"";'
+        f'if(!{var}&&!document.querySelector(\'{THUMB_SELECTOR}\'))return;'
+        f'if(!{var}){var}="\u200b";{IMAGE_ONLY_PATCHED_MARKER}'
+    )
 
 # --- Live override-aware title in the in-session title bar ------------------
 # Stock: the title-bar JSX renders `$.activeSession.value?.summary.value`
@@ -677,44 +691,29 @@ OLD_ACTIVE_SESSION_STAR_PREFIX = ".sessionItem_OOQiHg.active_OOQiHg::before"
 #
 # Seven sites across the 2.1.132 webview bundle. Click handlers untouched —
 # they always open the full path stored on the tool input object.
-FULL_PATH_TOOL_HEADER_PATCHES = (
-    # site 1 — RA.fileToolHeader (Edit / Write / MultiEdit reuse this)
-    (
-        'fileToolHeader($,Z,J){let Y=Z?.split("/").pop();',
-        'fileToolHeader($,Z,J){let Y=Z?.split("/").slice(-3).join("/");',
-    ),
-    # site 2 — Read class header override
-    (
-        'header($,Z){let J=Z.file_path?.split("/").pop();',
-        'header($,Z){let J=Z.file_path?.split("/").slice(-3).join("/");',
-    ),
-    # site 3 — Read fileReads array (batched / coalesced read display)
-    (
-        'let G=J.file_path.split("/").pop()||J.file_path;',
-        'let G=J.file_path.split("/").slice(-3).join("/")||J.file_path;',
-    ),
-    # site 4 — ExitPlanMode plan-file path
-    (
-        'let Y=Z.planFilePath.split("/").pop(),',
-        'let Y=Z.planFilePath.split("/").slice(-3).join("/"),',
-    ),
-    # site 5 — NotebookEdit header
-    (
-        'let J=Z.notebook_path?.split("/").pop();',
-        'let J=Z.notebook_path?.split("/").slice(-3).join("/");',
-    ),
-    # site 6 — Edit permissionRequest dialog
-    (
-        'permissionRequest($,Z){let J=Z.file_path.split("/").pop();',
-        'permissionRequest($,Z){let J=Z.file_path.split("/").slice(-3).join("/");',
-    ),
-    # site 7 — Read / Write permissionRequest dialog (uses ||"" fallback form)
-    (
-        'permissionRequest($,Z){let J=(Z.file_path||"").split("/").pop();',
-        'permissionRequest($,Z){let J=(Z.file_path||"").split("/").slice(-3).join("/");',
+# Build 11: anchored on the API property names (file_path, planFilePath,
+# notebook_path) and the method name fileToolHeader, none of which the mangler
+# touches — they are schema/interface identifiers, not locals. Build 10 pinned
+# the surrounding locals ($, Z, J, Y) instead, so 2.1.219's rename made all
+# seven anchors miss and the patch reported "no anchors matched" while the
+# feature was in fact still live from a hand-patch. Property-name anchoring
+# survives re-minification.
+FULL_PATH_TOOL_HEADER_RES = (
+    # Edit / Write / MultiEdit share this method; its arg is a bare local.
+    re.compile(r'(fileToolHeader\(\w+,\w+,\w+\)\{let \w+=\w+\?)\.split\("/"\)\.pop\(\)'),
+    # Read header, batched fileReads, both permissionRequest dialogs, the Write
+    # body label, ExitPlanMode, and NotebookEdit — all keyed on the property.
+    re.compile(
+        r'((?:\(\w+\.file_path\|\|""\)|\w+\.file_path\??'
+        r'|\w+\.planFilePath|\w+\.notebook_path\??))\.split\("/"\)\.pop\(\)'
     ),
 )
-FULL_PATH_TOOL_HEADER_MARKER = 'fileToolHeader($,Z,J){let Y=Z?.split("/").slice(-3).join("/");'
+FULL_PATH_TOOL_HEADER_SUB = r'\1.split("/").slice(-3).join("/")'
+# Already-patched detection, also property-anchored.
+FULL_PATH_TOOL_HEADER_MARKER_RE = re.compile(
+    r'(?:fileToolHeader\(\w+,\w+,\w+\)\{let \w+=\w+\?|\w+\.file_path\??)'
+    r'\.split\("/"\)\.slice\(-3\)\.join\("/"\)'
+)
 
 # --- Folder search by name in @ mention dropdown -----------------------------
 # The IW() function in extension.js builds its folder list solely from parent
@@ -1130,47 +1129,65 @@ def patch_css(ext_dir: Path) -> str:
 def patch_image_only_submit(text: str) -> tuple[str, list[str], list[str]]:
     """Allow submitting a chat message with only an image and no text.
 
+    Rename-proof as of Build 11. Build 10 and earlier hardcoded the minified
+    locals (L1, I1), so when Anthropic's mangler renamed them the patch silently
+    stopped applying AND reported "k1-gate not found" — the same message it
+    would emit if the code had genuinely been restructured. Now both the stock
+    gate and every historical patched form are matched structurally, and the
+    replacement is rendered with the bundle's own local names.
+
+    An older patched bundle is normalized up to the current ZWS form rather
+    than skipped, so the Build 4-13 bug (submitting "" downstream -> API 400)
+    cannot survive on a stale machine.
+
     Returns (new_text, applied_messages, skipped_messages).
     """
     applied: list[str] = []
     skipped: list[str] = []
     new_text = text
 
-    if IMAGE_ONLY_PATCHED_MARKER in new_text:
+    m_k1 = K1_GATE_RE.search(new_text)
+    m_patched = K1_GATE_PATCHED_FULL_RE.search(new_text)
+
+    # Already in the current form — nothing to do.
+    if IMAGE_ONLY_PATCHED_MARKER in new_text and not m_k1:
         skipped.append("image-only-submit (already)")
         return new_text, applied, skipped
 
-    # If a prior patched form is present, revert the k1 gate to stock so the
-    # standard apply path below replaces it with the new ZWS form. The Enter
-    # gate is unchanged between old and new patched forms — leave it alone.
-    if BUILD14_PATCHED_K1_GATE in new_text:
-        new_text = new_text.replace(BUILD14_PATCHED_K1_GATE, ORIGINAL_K1_GATE, 1)
-        applied.append('image-only-submit (reverted Build 14 "." form)')
-    elif OLD_PATCHED_K1_GATE in new_text:
-        new_text = new_text.replace(OLD_PATCHED_K1_GATE, ORIGINAL_K1_GATE, 1)
-        applied.append("image-only-submit (reverted Build 4-13 empty form)")
+    # Patched by an older build (no stable marker, or a stale placeholder).
+    if m_patched and not m_k1:
+        var, ref = m_patched.group(1), m_patched.group(2)
+        current = build_patched_k1_gate(var, ref)
+        if m_patched.group(0) == current:
+            skipped.append("image-only-submit (already)")
+            return new_text, applied, skipped
+        new_text = new_text.replace(m_patched.group(0), current, 1)
+        applied.append(f"image-only-submit (normalized older form [{var}/{ref}] to ZWS)")
+        return new_text, applied, skipped
 
     m_gate = ENTER_GATE_RE.search(new_text)
     gate_already_patched = m_gate is None and bool(ENTER_GATE_PATCHED_RE.search(new_text))
-    k1_ok = ORIGINAL_K1_GATE in new_text
 
     if not m_gate and not gate_already_patched:
         skipped.append("image-only-submit (enter-gate not found)")
         return new_text, applied, skipped
 
-    if not k1_ok:
+    if not m_k1:
         skipped.append("image-only-submit (k1-gate not found)")
         return new_text, applied, skipped
 
     if m_gate:
         fn1, fn2 = m_gate.group(1), m_gate.group(2)
-        new_text = new_text.replace(m_gate.group(0), f'if({fn1}(),1){fn2}()', 1)
+        new_text = new_text.replace(m_gate.group(0), f"if({fn1}(),1){fn2}()", 1)
         gate_note = f"Enter gate [{fn1}/{fn2}] + "
     else:
         gate_note = "enter gate already patched + "
 
-    new_text = new_text.replace(ORIGINAL_K1_GATE, PATCHED_K1_GATE, 1)
-    applied.append(f"image-only-submit ({gate_note}k1 gate + ZWS placeholder)")
+    var, ref = m_k1.group(1), m_k1.group(2)
+    new_text = new_text.replace(m_k1.group(0), build_patched_k1_gate(var, ref), 1)
+    applied.append(
+        f"image-only-submit ({gate_note}k1 gate [{var}/{ref}] + ZWS placeholder)"
+    )
     return new_text, applied, skipped
 
 
@@ -1287,38 +1304,40 @@ def patch_user_msg_time_js(text: str) -> tuple[str, list[str], list[str]]:
 def patch_full_path_tool_headers(text: str) -> tuple[str, list[str], list[str]]:
     """Show parent folders in tool-call rows instead of just the basename.
 
-    Walks the seven `.split("/").pop()` callsites (Edit/Write/MultiEdit
-    header, Read header, batched-Read array, ExitPlanMode, NotebookEdit,
-    and two permissionRequest dialogs) and rewrites each to use
-    `.slice(-3).join("/")`. Idempotent — bails out early if the marker is
-    already present (the marker is the first patched site's full new form).
+    Rewrites every `<file property>.split("/").pop()` display callsite to
+    `.slice(-3).join("/")`, e.g. `cc/memory/feedback_fully_qualified_paths.md`
+    instead of a bare basename. Click handlers are untouched — they always open
+    the full path from the tool input object.
+
+    Rename-proof as of Build 11: anchors key on the API property names rather
+    than the surrounding minified locals, and "already patched" is detected the
+    same way, so a re-minified bundle no longer reports a false "re-anchor
+    needed" for a patch that is working.
+
+    Deliberately does NOT touch the two IDE-diagnostic parsers that basename a
+    path out of a regex match — those feed `filePath` return values, not display
+    labels, and widening them risks breaking file resolution.
     """
     applied: list[str] = []
     skipped: list[str] = []
 
     new_text = text
     hits = 0
-    # Site 7 (the `(Z.file_path||"")` permissionRequest pattern) appears twice
-    # in the bundle — once for Read, once for Write. Replace ALL instances of
-    # each anchor so both Read and Write get patched in a single pass. Per-
-    # anchor count gives us idempotency for free: if an anchor is already in
-    # its patched form, count == 0 and the loop just moves on.
-    for old, new in FULL_PATH_TOOL_HEADER_PATCHES:
-        count = new_text.count(old)
-        if count > 0:
-            new_text = new_text.replace(old, new)
-            hits += count
+    for rx in FULL_PATH_TOOL_HEADER_RES:
+        new_text, n = rx.subn(FULL_PATH_TOOL_HEADER_SUB, new_text)
+        hits += n
 
     if hits == 0:
-        # Either fully patched already, or none of the anchors are recognizable
-        # (Anthropic shipped a re-minified bundle and we need to re-anchor).
-        if FULL_PATH_TOOL_HEADER_MARKER in new_text:
+        if FULL_PATH_TOOL_HEADER_MARKER_RE.search(new_text):
             skipped.append("full-path-tool-headers (already)")
         else:
             skipped.append("full-path-tool-headers (no anchors matched — re-anchor needed)")
         return new_text, applied, skipped
 
-    applied.append(f"full-path-tool-headers ({hits} sites patched)")
+    total = new_text.count('.split("/").slice(-3).join("/")')
+    applied.append(
+        f"full-path-tool-headers ({hits} newly patched, {total} display sites total)"
+    )
     return new_text, applied, skipped
 
 
