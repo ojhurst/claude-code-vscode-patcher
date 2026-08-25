@@ -609,84 +609,15 @@ USER_MSG_TIME_JS_MARKERS_OLD = (
     "__cceUserMsgStampInstalledV4=true",
 )
 
-# --- Auto-scroll the chat panel to the bottom on new content ----------------
-# James wants the chat panel to ALWAYS snap to the bottom the moment new
-# content arrives: a streamed token, a tool-output row, or — the case that
-# actually stranded him — a screenshot <img> whose height only settles AFTER
-# it decodes. Stock behavior leaves the scroll position wherever it was, so a
-# late-growing image (or a burst of streamed output) pushes the newest content
-# below the fold and he has to hand-scroll down every time.
-#
-# Approach: a self-contained IIFE appended to the bundle (never touch the
-# minified code). It:
-#   1. Pins the messages scroll container to the bottom on every DOM change
-#      (childList + characterData, subtree) — new messages, streaming text,
-#      tool output. Coalesced to one scroll per animation frame.
-#   2. Re-pins on capture-phase image `load` events, plus a rAF and a short
-#      timeout after, to catch screenshots whose height grows post-decode.
-#   3. Re-pins on window resize (panel width change reflows height).
-#
-# The scroll container is `[class*="messagesContainer_"]` — the only
-# overflow-y:auto flex column that holds the conversation (stock class
-# messagesContainer_07S1Yg, one occurrence in the bundle). The class-prefix
-# match survives the per-release hash bump, same convention as the other
-# webview patches here.
-#
-# Gated on "user is pinned to the bottom" (2026-08-13 fix). Build 8 shipped an
-# always-snap version with no gate, on the theory that "the observer reacts only
-# to DOM mutations, so he can still scroll up while nothing is changing." That
-# theory was wrong in practice: with characterData+subtree on document.body,
-# every streamed token is a mutation, and React re-renders the message list
-# while you scroll. So scrolling up during (or shortly after) a response got
-# yanked straight back to the bottom on the next animation frame — unusable.
-#
-# The gate is the standard stick-to-bottom pattern. A passive capture-phase
-# scroll listener records whether the user is within NEAR px of the bottom; it
-# never calls scrollTop, so it cannot fight the user. pin() then no-ops unless
-# that flag is set. Because the flag is captured from real scroll events (not
-# measured inside the observer, which fires *after* content already landed), it
-# still reads "was he at the bottom before this content arrived."
-#
-# Unpinning requires scrollTop to actually decrease (t.scrollTop<lastTop-1), so
-# content growing below the viewport during streaming does not falsely unpin.
-# Re-pinning is automatic the moment he scrolls back to the bottom, and Enter in
-# the composer re-pins too, so sending a message always jumps to the newest
-# content. lastEl resets the baseline when React swaps the container (session
-# switch), and rAF coalescing still prevents scroll storms during streaming.
-AUTO_SCROLL_JS_IIFE = (
-    "\n;(function(){"
-    "if(globalThis.__cceAutoScrollBottomV1)return;"
-    "globalThis.__cceAutoScrollBottomV1=true;"
-    "/*__cce_autoscroll_bottom_v1__*/"
-    "var SEL='[class*=\"messagesContainer_\"]';"
-    "var NEAR=64;"
-    "var pending=false;var pinned=true;var lastEl=null;var lastTop=0;"
-    "function box(){return document.querySelector(SEL)}"
-    "function nearBottom(c){return (c.scrollHeight-c.scrollTop-c.clientHeight)<NEAR}"
-    "function pin(){var c=box();if(c&&pinned){c.scrollTop=c.scrollHeight;lastEl=c;lastTop=c.scrollTop}}"
-    "function schedule(){if(pending)return;pending=true;"
-    "requestAnimationFrame(function(){pending=false;pin()})}"
-    "document.addEventListener('scroll',function(e){"
-    "var t=e.target;"
-    "if(!t||t.nodeType!==1||!t.matches||!t.matches(SEL))return;"
-    "if(t!==lastEl){lastEl=t;lastTop=t.scrollTop;pinned=nearBottom(t);return}"
-    "if(nearBottom(t)){pinned=true}else if(t.scrollTop<lastTop-1){pinned=false}"
-    "lastTop=t.scrollTop"
-    "},true);"
-    "document.addEventListener('keydown',function(e){"
-    "if(e.key==='Enter'&&!e.shiftKey&&e.target&&e.target.tagName==='TEXTAREA'){pinned=true}"
-    "},true);"
-    "try{new MutationObserver(schedule).observe(document.body,"
-    "{childList:true,subtree:true,characterData:true})}catch(e){}"
-    "document.addEventListener('load',function(e){"
-    "var t=e.target;"
-    "if(t&&t.tagName==='IMG'){schedule();requestAnimationFrame(schedule);setTimeout(schedule,60)}"
-    "},true);"
-    "window.addEventListener('resize',schedule);"
-    "schedule();setTimeout(schedule,500)"
-    "})();\n"
-)
-AUTO_SCROLL_JS_MARKER = "__cceAutoScrollBottomV1"
+# --- Auto-scroll to bottom: REMOVED (Build 10, 2026-08-25) ------------------
+# Builds 8 and 9 injected an IIFE that pinned the messages container to the
+# bottom on every DOM mutation. Build 8 had no gate and fought every scroll-up.
+# Build 9 added the standard within-64px stick-to-bottom gate, which still left
+# a hesitation: any scroll-up that stayed inside that 64px band re-armed the pin
+# and snapped James back down, and the rAF pin could land between his wheel
+# input and the scroll event. James asked for zero hesitation when scrolling up,
+# so the whole patch is gone and the panel uses Anthropic's stock scroll
+# behavior. Do NOT reintroduce a MutationObserver-driven scroll pin here.
 
 # --- Gold star on the active Local/Web tab ----------------------------------
 # Build 28 originally placed this star on `.sessionItem_OOQiHg.active_OOQiHg`
@@ -1353,33 +1284,6 @@ def patch_user_msg_time_js(text: str) -> tuple[str, list[str], list[str]]:
     return new_text, applied, skipped
 
 
-def patch_auto_scroll_bottom_js(text: str) -> tuple[str, list[str], list[str]]:
-    """Append the IIFE that keeps the chat pinned to the bottom on new content.
-
-    Installs a MutationObserver on the messages scroll container
-    (`[class*="messagesContainer_"]`) that snaps scrollTop to scrollHeight
-    whenever the DOM changes, plus a capture-phase image-load handler so
-    screenshots that grow after decoding still land at the bottom. Idempotent
-    — bails if the guard marker is already present.
-
-    Snapping is gated on the user being within 64px of the bottom. If he has
-    scrolled up to read, his position is left completely alone until he scrolls
-    back down (or hits Enter in the composer). Without that gate the panel
-    fights the user on every streamed token — see the 2026-08-13 note above.
-    """
-    applied: list[str] = []
-    skipped: list[str] = []
-    if AUTO_SCROLL_JS_MARKER in text:
-        skipped.append("auto-scroll-bottom (already)")
-        return text, applied, skipped
-    new_text = text + AUTO_SCROLL_JS_IIFE
-    applied.append(
-        "auto-scroll-bottom V1 (pin messagesContainer to bottom on new "
-        "content + image load, only when already at the bottom)"
-    )
-    return new_text, applied, skipped
-
-
 def patch_full_path_tool_headers(text: str) -> tuple[str, list[str], list[str]]:
     """Show parent folders in tool-call rows instead of just the basename.
 
@@ -1751,11 +1655,6 @@ def patch_js(ext_dir: Path) -> str:
     text, umt_applied, umt_skipped = patch_user_msg_time_js(text)
     applied.extend(umt_applied)
     skipped.extend(umt_skipped)
-
-    # --- Patch: always keep the chat pinned to the bottom on new content ---
-    text, asb_applied, asb_skipped = patch_auto_scroll_bottom_js(text)
-    applied.extend(asb_applied)
-    skipped.extend(asb_skipped)
 
     # --- Patch: tab-complete slash command into input (no bare-send) ---
     text, stc_applied, stc_skipped = patch_slash_tab_complete(text)
