@@ -291,8 +291,22 @@ K1_GATE_PATCHED_FULL_RE = re.compile(
     r'(?:if\(!\1\)\1="[^"]*";)?'
     r'(?:/\*__cce_ios\*/)?'
 )
-# Class-prefix match so the per-release hash bump on thumbIcon_ cannot break it.
-THUMB_SELECTOR = '[class*="thumbIcon_"]'
+# What counts as "an attachment is pending send".
+#
+# This was `[class*="thumbIcon_"]` — the <img> inside the attachment pill —
+# through Build 11, and it is subtly wrong twice over. The pill renders the
+# instant the file joins the attachment list, but the thumbnail is
+# `thumbnailUrl ? <img class=thumbIcon> : <GenericIcon>` and thumbnailUrl only
+# arrives once the FileReader has resolved a dataUrl. Paste a large screenshot
+# and hit Enter immediately and you lose that race, silently. Worse, the pill
+# is only handed a thumbnailUrl when `file.type.startsWith("image/")`, so an
+# image with an empty or non-image MIME type never grows a thumb at all.
+#
+# The attachment row is rendered behind `attachments.length > 0` and nothing
+# else, which is exactly the condition we mean. Substring-matched so the
+# per-release CSS-module hash bump cannot break it; the thumb arm is kept as a
+# fallback.
+THUMB_SELECTOR = '[class*="attachedFilesContainer"],[class*="thumbIcon_"]'
 
 
 def build_patched_k1_gate(var: str, ref: str) -> str:
