@@ -635,6 +635,8 @@ USER_MSG_TIME_JS_MARKERS_OLD = (
     "__cceUserMsgStampInstalledV2=true",
     "__cceUserMsgStampInstalledV3=true",
     "__cceUserMsgStampInstalledV4=true",
+    # V5 joined the strip list when the stamps were retired (2026-10-03).
+    "__cceUserMsgStampInstalledV5=true",
 )
 
 # --- Auto-scroll to bottom: REMOVED (Build 10, 2026-08-25) ------------------
@@ -1220,8 +1222,10 @@ def patch_user_msg_time_css(text: str) -> tuple[str, list[str], list[str]]:
     if USER_MSG_TIME_CSS_OLD_MARKER in new_text:
         # Match the position-relative + ::after pair so we remove the whole
         # block, not just the ::after rule.
+        # The position:relative companion rule is optional: some bundles carry
+        # only the ::after rule (leftover seen 2026-10-03).
         pattern = (
-            r'\[class\*="userMessageContainer_"\]\{position:relative\}'
+            r'(?:\[class\*="userMessageContainer_"\]\{position:relative\}\n?)?'
             r'\[class\*="userMessageContainer_"\]::after\{[^}]*\}\n?'
         )
         m = re.search(pattern, new_text)
@@ -1229,11 +1233,14 @@ def patch_user_msg_time_css(text: str) -> tuple[str, list[str], list[str]]:
             new_text = new_text.replace(m.group(0), "")
             applied.append("user-msg-time-css (stripped V1–V3 ::after rule)")
 
+    # RETIRED 2026-10-03 (James: remove the small grey timestamps). Strip the
+    # inline rule if it is in the bundle; never append it again.
     if USER_MSG_TIME_CSS_MARKER in new_text:
-        skipped.append("user-msg-time-css (already)")
-        return new_text, applied, skipped
-    new_text = new_text.rstrip() + "\n" + USER_MSG_TIME_CSS_RULE + "\n"
-    applied.append("user-msg-time-css V4 (inline timestamp before bubble text)")
+        new_text = new_text.replace("\n" + USER_MSG_TIME_CSS_RULE + "\n", "\n")
+        new_text = new_text.replace(USER_MSG_TIME_CSS_RULE, "")
+        applied.append("user-msg-time-css (retired, stripped)")
+    else:
+        skipped.append("user-msg-time-css (retired, not applied)")
     return new_text, applied, skipped
 
 
@@ -1299,7 +1306,7 @@ def patch_user_msg_time_js(text: str) -> tuple[str, list[str], list[str]]:
         pattern = (
             r'\n;\(function\(\)\{if\(globalThis\.__cceUserMsgStampInstalled'
             + re.escape(version)
-            + r'\)return;.*?\}\)\(\);\n'
+            + r'\)return;.*?\}\)\(\);\n?'
         )
         m = re.search(pattern, new_text, re.DOTALL)
         if m:
@@ -1307,11 +1314,10 @@ def patch_user_msg_time_js(text: str) -> tuple[str, list[str], list[str]]:
             label = version if version.startswith("V") else "V1"
             applied.append(f"user-msg-time-js (stripped {label} IIFE)")
 
-    if USER_MSG_TIME_JS_MARKER in new_text:
-        skipped.append("user-msg-time-js (already)")
-        return new_text, applied, skipped
-    new_text = new_text + USER_MSG_TIME_JS_IIFE
-    applied.append("user-msg-time-js V5 (inline stamp on inner bubble, with seconds)")
+    # RETIRED 2026-10-03 (James: "remove the timestamp thing ... the small grayed
+    # out ones"). The loop above strips every IIFE generation, V5 included; the
+    # IIFE is no longer appended. Do not re-add without asking.
+    skipped.append("user-msg-time-js (retired, not applied)")
     return new_text, applied, skipped
 
 
