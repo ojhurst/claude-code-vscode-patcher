@@ -34,9 +34,11 @@ Backs up modified files to <name>.bak.<timestamp> before editing.
 
 from __future__ import annotations
 import glob
+import json
 import os
 import re
 import shutil
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -1348,7 +1350,7 @@ def patch_full_path_tool_headers(text: str) -> tuple[str, list[str], list[str]]:
         hits += n
 
     if hits == 0:
-        if FULL_PATH_TOOL_HEADER_MARKER_RE.search(new_text):
+        if FULL_PATH_TOOL_HEADER_MARKER_RE.search(new_text) or GH_PATH_SITE in new_text:
             skipped.append("full-path-tool-headers (already)")
         else:
             skipped.append("full-path-tool-headers (no anchors matched — re-anchor needed)")
@@ -1358,6 +1360,85 @@ def patch_full_path_tool_headers(text: str) -> tuple[str, list[str], list[str]]:
     applied.append(
         f"full-path-tool-headers ({hits} newly patched, {total} display sites total)"
     )
+    return new_text, applied, skipped
+
+
+# --- GitHub owner/repo in tool-call path labels ------------------------------
+# Builds on full-path-tool-headers: every `.split("/").slice(-3).join("/")`
+# display site becomes `.__ccGh()`, a String.prototype helper injected at the
+# top of the bundle. For a path under `.../apps/<dir>/...` whose repo has a
+# GitHub remote it renders the whole GitHub path —
+# `tekton-growth/mason-virgilslandscaping/scripts/run-mason-gateway` — so you
+# can tell an ojhurst repo from a Tekton one at a glance. Anything else falls
+# back to the old last-3-segments label.
+#
+# The webview cannot run git, so the dir → owner/repo map is baked in at patch
+# time from ~/apps/*/.git. A repo cloned after the last patch run shows the
+# fallback label until the patcher runs again. The prelude sits between start
+# and end markers so each run swaps in a freshly built map.
+GH_PATH_START = "/*__cce_gh_path_v1__*/"
+GH_PATH_END = "/*__cce_gh_path_end__*/"
+GH_PATH_SITE = ".__ccGh()"
+GH_PATH_BLOCK_RE = re.compile(re.escape(GH_PATH_START) + r".*?" + re.escape(GH_PATH_END), re.S)
+GH_REMOTE_RE = re.compile(r"github\.com[:/]([^/]+)/([^/]+?)(?:\.git)?/?$")
+
+
+def build_gh_repo_map(apps_dir: Path = Path.home() / "apps") -> dict[str, str]:
+    repo_map: dict[str, str] = {}
+    if not apps_dir.is_dir():
+        return repo_map
+    for d in sorted(apps_dir.iterdir()):
+        if not (d / ".git").exists():
+            continue
+        try:
+            url = subprocess.run(
+                ["git", "-C", str(d), "config", "--get", "remote.origin.url"],
+                capture_output=True, text=True, timeout=5,
+            ).stdout.strip()
+        except (OSError, subprocess.SubprocessError):
+            continue
+        m = GH_REMOTE_RE.search(url)
+        if m:
+            repo_map[d.name] = f"{m.group(1)}/{m.group(2)}"
+    return repo_map
+
+
+def gh_path_prelude(repo_map: dict[str, str]) -> str:
+    return (
+        GH_PATH_START
+        + "(function(){try{var M=" + json.dumps(repo_map, separators=(",", ":")) + ";"
+        + "Object.defineProperty(String.prototype,'__ccGh',{configurable:true,writable:true,"
+        + "value:function(){var p=String(this),m=/\\/apps\\/([^\\/]+)\\/(.+)$/.exec(p);"
+        + "if(m&&M[m[1]])return M[m[1]]+'/'+m[2];"
+        + "return p.split('/').slice(-3).join('/');}});"
+        + "}catch(_){}})();"
+        + GH_PATH_END
+    )
+
+
+def patch_gh_path_labels(text: str) -> tuple[str, list[str], list[str]]:
+    applied: list[str] = []
+    skipped: list[str] = []
+    repo_map = build_gh_repo_map()
+    prelude = gh_path_prelude(repo_map)
+
+    sites = text.count('.split("/").slice(-3).join("/")')
+    new_text = text.replace('.split("/").slice(-3).join("/")', GH_PATH_SITE)
+
+    if GH_PATH_BLOCK_RE.search(new_text):
+        new_text = GH_PATH_BLOCK_RE.sub(lambda _: prelude, new_text, count=1)
+    else:
+        new_text = prelude + new_text
+
+    if new_text == text:
+        skipped.append("gh-path-labels (already, map unchanged)")
+    elif sites:
+        applied.append(f"gh-path-labels ({sites} sites, {len(repo_map)} repos mapped)")
+    elif GH_PATH_SITE in new_text:
+        applied.append(f"gh-path-labels (map refreshed, {len(repo_map)} repos)")
+    else:
+        skipped.append("gh-path-labels (no path sites — full-path-tool-headers missed)")
+        return text, [], skipped
     return new_text, applied, skipped
 
 
@@ -1689,6 +1770,11 @@ def patch_js(ext_dir: Path) -> str:
     text, fp_applied, fp_skipped = patch_full_path_tool_headers(text)
     applied.extend(fp_applied)
     skipped.extend(fp_skipped)
+
+    # --- Patch: GitHub owner/repo prefix on those path labels ---
+    text, gh_applied, gh_skipped = patch_gh_path_labels(text)
+    applied.extend(gh_applied)
+    skipped.extend(gh_skipped)
 
     # --- Patch: stamp each new userMessageContainer with arrival timestamp ---
     text, umt_applied, umt_skipped = patch_user_msg_time_js(text)
