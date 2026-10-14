@@ -1164,6 +1164,9 @@ def patch_image_only_submit(text: str) -> tuple[str, list[str], list[str]]:
     skipped: list[str] = []
     new_text = text
 
+    if RE_IOS_NATIVE_GATE.search(new_text):
+        return patch_image_only_native(new_text)
+
     m_k1 = K1_GATE_RE.search(new_text)
     m_patched = K1_GATE_PATCHED_FULL_RE.search(new_text)
 
@@ -1206,6 +1209,68 @@ def patch_image_only_submit(text: str) -> tuple[str, list[str], list[str]]:
     applied.append(
         f"image-only-submit ({gate_note}k1 gate [{var}/{ref}] + ZWS placeholder)"
     )
+    return new_text, applied, skipped
+
+
+# 2.1.282+: Anthropic's own gate `function FI($,J){return $.trim()!==""||J.length>0}`
+# (J = attachment list) already allows an attachment-only send, and the old
+# inline Enter/submit gates are gone. But the body is still the empty string,
+# and the API rejects empty text blocks, so a U+200B placeholder is still
+# substituted.
+#
+# WHERE it goes matters. 2.1.28x added an invisible-character sanitizer right
+# after the gate: it strips zero-width characters, and when it strips anything
+# it stops the send and shows "Removed 1 invisible character · review and
+# press Enter to send". A placeholder placed before the sanitizer gets eaten
+# and every image-only send stalls on that banner. So it goes in after the
+# sanitizer block, and the post-truncation copy is set too — otherwise
+# `V2.length<M0.length` reads as a truncation and appends "[Message truncated]".
+RE_IOS_NATIVE_GATE = re.compile(
+    r'function [\w$]+\(([\w$]+),([\w$]+)\)'
+    r'\{return \1\.trim\(\)!==""\|\|\2\.length>0\}'
+)
+RE_IOS_NATIVE_SUBMIT = re.compile(
+    r'let (?P<v>[\w$]+)=[\w$]+\.current\?\.textContent\?\.trim\(\)\|\|"";'
+    r'if\(![\w$]+\((?P=v),[\w$]+\)\)return;'
+)
+RE_IOS_NATIVE_SANITIZE = re.compile(
+    r'(?P<block>if\((?P<x>[\w$]+)!==void 0\)\{[^{}]*?"review":"empty"[^{}]*?return\})'
+    r'(?P<ph>if\(![\w$]+\)[\w$]+=[\w$]+="\\u200b";/\*__cce_ios\*/)?'
+    r'(?P<let>let [\w$]+=(?P<trunc>[\w$]+)\.length<(?P<v>[\w$]+)\.length\?)'
+)
+# Any ZWS placeholder sitting before the sanitizer (the earlier native form).
+RE_IOS_EARLY_ZWS = r'(?:if\(!{v}\){v}="(?:\\u200b|​)";(?:/\*__cce_ios\*/)?)+'
+
+
+def patch_image_only_native(text: str) -> tuple[str, list[str], list[str]]:
+    applied: list[str] = []
+    skipped: list[str] = []
+    new_text = text
+
+    san_m = RE_IOS_NATIVE_SANITIZE.search(new_text)
+    if not san_m:
+        skipped.append("image-only-submit (native gate present; sanitizer block not found — re-anchor needed)")
+        return text, applied, skipped
+    v, trunc = san_m.group("v"), san_m.group("trunc")
+    placeholder = f'if(!{v}){v}={trunc}="\\u200b";{IMAGE_ONLY_PATCHED_MARKER}'
+
+    notes = []
+    sub_m = RE_IOS_NATIVE_SUBMIT.search(new_text)
+    if sub_m and sub_m.group("v") == v:
+        early = re.compile(RE_IOS_EARLY_ZWS.format(v=re.escape(v))).match(new_text, sub_m.end())
+        if early:
+            new_text = new_text[:early.start()] + new_text[early.end():]
+            notes.append("removed pre-sanitizer ZWS")
+
+    san_m = RE_IOS_NATIVE_SANITIZE.search(new_text)
+    if san_m.group("ph") != placeholder:
+        new_text = new_text[:san_m.end("block")] + placeholder + new_text[san_m.start("let"):]
+        notes.append("ZWS placed after invisible-char sanitizer")
+
+    if not notes:
+        skipped.append("image-only-submit (already)")
+        return text, applied, skipped
+    applied.append(f"image-only-submit (native gate; {', '.join(notes)})")
     return new_text, applied, skipped
 
 
