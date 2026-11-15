@@ -1068,7 +1068,8 @@ def patch_css(ext_dir: Path) -> str:
 
         # Step 2: append the scoped :has rule. Only proceed if the original
         # pill rule is now in the text — that confirms we know the bundle.
-        if ORIGINAL_PILL_TAIL in new_text:
+        # 2.1.30x+ stock pill tail is "gap:4px;min-width:0;transition:border-color .15s}".
+        if ORIGINAL_PILL_TAIL in new_text or "gap:4px;min-width:0;transition:border-color .15s}" in new_text:
             new_text = new_text.rstrip() + "\n" + image_pill_rule() + "\n"
             applied.append("image-pill (scoped via :has(.thumbIcon))")
         else:
