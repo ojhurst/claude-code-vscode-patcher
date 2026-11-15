@@ -1242,6 +1242,29 @@ RE_IOS_NATIVE_SANITIZE = re.compile(
 RE_IOS_EARLY_ZWS = r'(?:if\(!{v}\){v}="(?:\\u200b|​)";(?:/\*__cce_ios\*/)?)+'
 
 
+# 2.1.30x+ shape: the sanitizer block ends `"review",X.text);return}`, there is
+# no post-truncation copy, and the next statement is the length check
+# `let se=ORe(zt);if(`. The placeholder goes between them. Keep identical to
+# ~/apps/vscode-extension/patch-extension.py (both patch the same bundle).
+RE_IOS_NATIVE_SANITIZE_V2 = re.compile(
+    r'(?P<block>if\([\w$]+!==void 0\)\{[^{}]*?"review",[\w$]+\.text\);return\})'
+    r'(?P<ph>if\(![\w$]+\)[\w$]+="\\u200b";/\*__cce_ios\*/)?'
+    r'(?P<let>let [\w$]+=[\w$]+\((?P<v>[\w$]+)\);if\()'
+)
+
+
+def patch_image_only_native_v2(text: str) -> tuple[str, list[str], list[str]]:
+    m = RE_IOS_NATIVE_SANITIZE_V2.search(text)
+    if not m:
+        return text, [], ["image-only-submit (native gate present; sanitizer block not found — re-anchor needed)"]
+    v = m.group("v")
+    placeholder = f'if(!{v}){v}="\\u200b";{IMAGE_ONLY_PATCHED_MARKER}'
+    if m.group("ph") == placeholder:
+        return text, [], ["image-only-submit (already)"]
+    new_text = text[:m.end("block")] + placeholder + text[m.start("let"):]
+    return new_text, ["image-only-submit (native gate v2; ZWS placed after invisible-char sanitizer)"], []
+
+
 def patch_image_only_native(text: str) -> tuple[str, list[str], list[str]]:
     applied: list[str] = []
     skipped: list[str] = []
@@ -1249,8 +1272,7 @@ def patch_image_only_native(text: str) -> tuple[str, list[str], list[str]]:
 
     san_m = RE_IOS_NATIVE_SANITIZE.search(new_text)
     if not san_m:
-        skipped.append("image-only-submit (native gate present; sanitizer block not found — re-anchor needed)")
-        return text, applied, skipped
+        return patch_image_only_native_v2(text)
     v, trunc = san_m.group("v"), san_m.group("trunc")
     placeholder = f'if(!{v}){v}={trunc}="\\u200b";{IMAGE_ONLY_PATCHED_MARKER}'
 
